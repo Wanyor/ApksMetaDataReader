@@ -22,6 +22,8 @@
 
 依赖 JDK 8+，无需其他工具。
 
+### 命令行
+
 ```bash
 # 编译
 javac -d out src/com/wanyor/android/app/*.java
@@ -29,6 +31,14 @@ javac -d out src/com/wanyor/android/app/*.java
 # 打包为 JAR
 jar --create --file ApksMetaDataReader.jar --main-class com.wanyor.android.app.MetaDataReader -C out .
 ```
+
+### IntelliJ IDEA
+
+项目已包含 Artifact 配置，直接使用菜单打包：
+
+`Build` → `Build Artifacts` → `ApksMetaDataReader:jar` → `Build`
+
+输出文件：`out/artifacts/ApksMetaDataReader_jar/ApksMetaDataReader.jar`
 
 ## 使用
 
