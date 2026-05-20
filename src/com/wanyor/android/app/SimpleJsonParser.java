@@ -69,21 +69,21 @@ public class SimpleJsonParser {
                     }
                 }
             } else if (c == 't') {
-                if (json.substring(i).startsWith("true")) {
+                if (json.startsWith("true", i)) {
                     result.put(key, true);
                     i += 4;
                 } else {
                     i++;
                 }
             } else if (c == 'f') {
-                if (json.substring(i).startsWith("false")) {
+                if (json.startsWith("false", i)) {
                     result.put(key, false);
                     i += 5;
                 } else {
                     i++;
                 }
             } else if (c == 'n') {
-                if (json.substring(i).startsWith("null")) {
+                if (json.startsWith("null", i)) {
                     result.put(key, null);
                     i += 4;
                 } else {
