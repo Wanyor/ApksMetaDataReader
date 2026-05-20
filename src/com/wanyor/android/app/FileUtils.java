@@ -9,12 +9,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 /** 文件操作与字节序工具方法，供各解析器共用。 */
 public class FileUtils {
 
     /** 单个 ZIP 条目允许读取的最大解压字节数（512 MB），防止 Zip Bomb。 */
-    private static final long MAX_ENTRY_BYTES = 512L * 1024 * 1024;
+    static final long MAX_ENTRY_BYTES = 512L * 1024 * 1024;
 
     /** 返回文件大小（字节）。 */
     public static long getFileSize(String filePath) {
@@ -27,7 +28,7 @@ public class FileUtils {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");
             fis = new FileInputStream(filePath);
-            byte[] buffer = new byte[8192];
+            byte[] buffer = new byte[65536];
             int read;
             while ((read = fis.read(buffer)) != -1) {
                 md.update(buffer, 0, read);
@@ -84,6 +85,26 @@ public class FileUtils {
         } finally {
             if (is != null) try { is.close(); } catch (Exception ignored) {}
         }
+    }
+
+    /**
+     * 从 ZipInputStream 当前条目读取全部字节，含 Zip Bomb 防护。
+     * 调用方在此之后调用 getNextEntry() 即可，无需手动 closeEntry()。
+     */
+    static byte[] readFromZipInputStream(ZipInputStream zis, ZipEntry entry) throws IOException {
+        long declared = entry.getSize();
+        if (declared > MAX_ENTRY_BYTES) return null;
+        int capacity = declared > 0 ? (int) declared : 8192;
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(capacity);
+        byte[] buf = new byte[8192];
+        int n;
+        long total = 0;
+        while ((n = zis.read(buf)) != -1) {
+            total += n;
+            if (total > MAX_ENTRY_BYTES) return null;
+            bos.write(buf, 0, n);
+        }
+        return bos.toByteArray();
     }
 
     /** 以小端序读取 16 位有符号整数。 */

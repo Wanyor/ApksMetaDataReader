@@ -53,14 +53,22 @@ public class ResourceTableParser {
     private static final int NO_ENTRY   = -1;     // uint32 0xFFFFFFFF 的有符号表示
     private static final int NO_ENTRY16 = 0xFFFF; // uint16 空条目标记
 
-    /** 全局字符串池，所有 TYPE_STRING 值均引用此池中的字符串。 */
-    private String[] globalStringPool;
+    // -------------------------------------------------------------------------
+    // 惰性字符串池字段：parseStringPool 只存偏移，getFromPool 按需解码并缓存
+    // -------------------------------------------------------------------------
+    private byte[]   poolData;        // 指向整个 arsc 字节数组
+    private int      poolStrDataStart;// 字符串数据区起始（绝对偏移）
+    private boolean  poolIsUtf8;
+    private int[]    poolOffsets;     // 每条字符串相对 poolStrDataStart 的偏移
+    private String[] poolCache;       // 已解码缓存；null 表示尚未解码
+    private int      poolCount;
+
     /** 解析结果：资源 ID → 字符串值。 */
     private Map<Integer, String> resourceMap;
 
     /**
      * 解析 resources.arsc 字节，返回资源 ID → 字符串的映射。
-     * 仅提取字符串、整数和引用类型的值；图片、颜色等其他类型忽略。
+     * 字符串池采用惰性解码：仅在 put/get 实际访问时才解码对应字符串。
      */
     public Map<Integer, String> parse(byte[] data) {
         resourceMap = new HashMap<>();
@@ -73,7 +81,7 @@ public class ResourceTableParser {
 
         // 全局字符串池紧跟 ResTable_header 之后
         if (offset < data.length && FileUtils.readUShort(data, offset) == RES_STRING_POOL_TYPE) {
-            globalStringPool = parseStringPool(data, offset);
+            parseStringPool(data, offset);
             offset += FileUtils.readInt(data, offset + 4);
         }
 
@@ -225,9 +233,12 @@ public class ResourceTableParser {
      *   紧凑格式（ENTRY_FLAG_COMPACT）：8 字节，dataType 编码在 entryFlags 高字节。
      *   标准格式：ResTable_entry（entrySize 字节）+ Res_value（8 字节）。
      *
-     * 优先存储默认配置的值；非默认配置只在该资源 ID 尚无记录时才写入。
+     * 优先存储默认配置的值；非默认配置对已有记录直接跳过（避免解码多语言重复条目）。
      */
     private void putEntry(byte[] data, int entryPos, int resourceId, boolean isDefault) {
+        // 非默认配置且该 ID 已有记录：直接跳过，无需解码字符串
+        if (!isDefault && resourceMap.containsKey(resourceId)) return;
+
         if (entryPos + 4 > data.length) return;
 
         int entrySize  = FileUtils.readUShort(data, entryPos);
@@ -263,16 +274,16 @@ public class ResourceTableParser {
      * 根据数据类型将值转换为字符串。
      * 只处理字符串、整数、引用三种类型；其他类型返回 null（不放入 resourceMap）。
      */
-    private String resolveValue(int dataType, int data) {
+    private String resolveValue(int dataType, int valData) {
         switch (dataType) {
             case TYPE_STRING:
-                // 值为全局字符串池的索引
-                return getFromPool(globalStringPool, data);
+                // 值为全局字符串池的索引，惰性解码
+                return getFromPool(valData);
             case TYPE_INT_DEC:
-                return String.valueOf(data);
+                return String.valueOf(valData);
             case TYPE_REFERENCE:
                 // 保留引用格式，由调用方（ApkParser.resolveValue）继续跳转
-                return "@0x" + Integer.toHexString(data);
+                return "@0x" + Integer.toHexString(valData);
             default:
                 return null;
         }
@@ -303,28 +314,27 @@ public class ResourceTableParser {
     // -------------------------------------------------------------------------
 
     /**
-     * 解析字符串池，返回字符串数组。
+     * 解析字符串池，仅存储偏移量数组，不立即解码字符串（惰性解码）。
      * 安全限制：stringCount 超过 500000 时拒绝，防止 OOM。
      */
-    private String[] parseStringPool(byte[] data, int offset) {
+    private void parseStringPool(byte[] data, int offset) {
         int stringCount  = FileUtils.readInt(data, offset + 8);
-        if (stringCount <= 0 || stringCount > 500_000) return new String[0];
+        if (stringCount <= 0 || stringCount > 500_000) return;
         int flags        = FileUtils.readInt(data, offset + 16);
         int stringsStart = FileUtils.readInt(data, offset + 20);
-        boolean isUtf8   = (flags & 0x0100) != 0;
 
-        String[] pool = new String[stringCount];
+        poolData         = data;
+        poolIsUtf8       = (flags & 0x0100) != 0;
+        poolStrDataStart = offset + stringsStart;
+        poolCount        = stringCount;
+        poolOffsets      = new int[stringCount];
+        poolCache        = new String[stringCount];
+
         for (int i = 0; i < stringCount; i++) {
             int offsetPos = offset + 28 + i * 4;
-            if (offsetPos + 4 > data.length) break; // 数据不足，截断
-            int strOff = offset + stringsStart + FileUtils.readInt(data, offsetPos);
-            if (strOff < 0 || strOff >= data.length) {
-                pool[i] = "";
-                continue;
-            }
-            pool[i] = isUtf8 ? readUtf8String(data, strOff) : readUtf16String(data, strOff);
+            if (offsetPos + 4 > data.length) { poolCount = i; break; }
+            poolOffsets[i] = FileUtils.readInt(data, offsetPos);
         }
-        return pool;
     }
 
     /**
@@ -385,9 +395,14 @@ public class ResourceTableParser {
         return true;
     }
 
-    /** 从字符串池中按索引取值；越界或池为 null 时返回 null。 */
-    private String getFromPool(String[] pool, int index) {
-        if (pool == null || index < 0 || index >= pool.length) return null;
-        return pool[index];
+    /** 按索引惰性解码字符串池条目；首次访问时解码并缓存，越界返回 null。 */
+    private String getFromPool(int index) {
+        if (poolOffsets == null || index < 0 || index >= poolCount) return null;
+        if (poolCache[index] != null) return poolCache[index];
+        int strOff = poolStrDataStart + poolOffsets[index];
+        if (strOff < 0 || strOff >= poolData.length) return null;
+        String s = poolIsUtf8 ? readUtf8String(poolData, strOff) : readUtf16String(poolData, strOff);
+        poolCache[index] = (s != null) ? s : "";
+        return poolCache[index];
     }
 }
