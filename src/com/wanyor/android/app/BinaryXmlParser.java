@@ -55,6 +55,8 @@ public class BinaryXmlParser {
     private String[] stringPool;
     /** 属性索引→资源 ID 映射，由 parseResourceMap 填充。 */
     private int[] resourceIds;
+    /** resourceIds 的反向映射（资源 ID → 字符串池下标），O(1) 查找用。 */
+    private Map<Integer, Integer> resourceIdIndex;
     /** 外部资源表（来自 resources.arsc），用于解析资源引用。 */
     private Map<Integer, String> externalResourceMap;
 
@@ -213,7 +215,7 @@ public class BinaryXmlParser {
 
     /**
      * 解析资源映射 chunk（RES_XML_RESOURCE_MAP_TYPE）。
-     * 建立属性字符串池索引 → 资源 ID 的对应关系，用于查找属性名的规范形式。
+     * 建立属性字符串池索引 → 资源 ID 的对应关系，同时构建反向 HashMap 供 O(1) 查找。
      */
     private void parseResourceMap(byte[] data, int offset) {
         int headerSize = FileUtils.readUShort(data, offset + 2);
@@ -221,8 +223,11 @@ public class BinaryXmlParser {
         int count = (chunkSize - headerSize) / 4;
         if (count <= 0) return;
         resourceIds = new int[count];
+        resourceIdIndex = new HashMap<>(count * 2);
         for (int i = 0; i < count; i++) {
-            resourceIds[i] = FileUtils.readInt(data, offset + headerSize + i * 4);
+            int resId = FileUtils.readInt(data, offset + headerSize + i * 4);
+            resourceIds[i] = resId;
+            resourceIdIndex.put(resId, i);
         }
     }
 
@@ -292,7 +297,7 @@ public class BinaryXmlParser {
             // 检查是否为资源引用格式（"@RRGGBBAA"）
             if (rawValue.startsWith("@")) {
                 String stripped = rawValue.substring(1);
-                if (stripped.length() > 0 && stripped.matches("[0-9a-fA-F]+")) {
+                if (stripped.length() > 0 && isHexString(stripped)) {
                     try {
                         int refId = Integer.parseInt(stripped, 16);
                         String resolved = resolveResourceRef(refId);
@@ -331,23 +336,27 @@ public class BinaryXmlParser {
 
     /**
      * 通过资源 ID 在资源映射中查找对应的字符串值。
-     * 先查当前文件的资源映射（resourceIds），再查外部资源表（resources.arsc）。
+     * 先查当前文件的资源映射（O(1) HashMap），再查外部资源表（resources.arsc）。
      */
     private String resolveResourceRef(int refId) {
-        // 在本文件的资源映射中查找（resourceIds[i] == refId → 返回字符串池第 i 个字符串）
-        if (resourceIds != null) {
-            for (int i = 0; i < resourceIds.length; i++) {
-                if (resourceIds[i] == refId) {
-                    return getString(i);
-                }
-            }
+        if (resourceIdIndex != null) {
+            Integer idx = resourceIdIndex.get(refId);
+            if (idx != null) return getString(idx);
         }
-        // 在外部资源表中查找
         if (externalResourceMap != null) {
             String val = externalResourceMap.get(refId);
             if (val != null) return val;
         }
         return null;
+    }
+
+    /** 逐字符校验字符串是否全为十六进制字符，替代每次调用都编译正则的 matches()。 */
+    private static boolean isHexString(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
+        }
+        return true;
     }
 
     /**
