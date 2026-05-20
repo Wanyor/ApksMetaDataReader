@@ -8,8 +8,25 @@ import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
+/**
+ * 公共入口类：根据文件扩展名将解析请求路由到对应的解析器。
+ *
+ * 支持格式及解析路径：
+ *   .apk  → ApkParser（二进制 XML + 资源表），失败时回退到 ApkParser2
+ *   .apks → ZIP 包，提取 base APK 后同 apk 路径
+ *   .xapk → 优先读取 manifest.json，缺失字段从 base APK 补全
+ *   .apkm → ZIP 包，提取 base APK 后同 apk 路径
+ *   其他  → 先尝试作为 ZIP bundle 解析，再回退到 apk 路径
+ */
 public class MetaDataReader {
 
+    /**
+     * 从安装包文件中提取元数据，自动识别格式。
+     *
+     * @param filePath 安装包路径，支持 .apk / .apks / .xapk / .apkm 及其他 ZIP bundle
+     * @return 提取到的元数据，各字段可能为 null（表示未找到）
+     * @throws IllegalArgumentException 路径为空或文件不存在时抛出
+     */
     public static ApkMetaInfo readMetaInfo(String filePath) {
         if (filePath == null || filePath.isEmpty()) {
             throw new IllegalArgumentException("File path cannot be null or empty");
@@ -25,6 +42,7 @@ public class MetaDataReader {
         switch (ext) {
             case "apk":
                 info = parseApk(filePath);
+                // ApkParser 失败（无包名，或同时缺少应用名和版本名）时回退到 ApkParser2
                 if (info.getPackageName() == null || (info.getAppName() == null && info.getVersionName() == null)) {
                     ApkParser2 p2 = new ApkParser2();
                     ApkMetaInfo info2 = p2.parse(filePath);
@@ -43,6 +61,7 @@ public class MetaDataReader {
                 info = parseApkm(filePath);
                 break;
             default:
+                // 未知扩展名：先尝试作为 ZIP bundle 处理，再回退到直接解析
                 info = parseAsZipBundle(filePath);
                 if (info == null) {
                     info = parseApk(filePath);
@@ -50,6 +69,7 @@ public class MetaDataReader {
                 break;
         }
 
+        // 补充文件级元数据（大小和 MD5 针对原始安装包文件，而非解压后的 base APK）
         if (info != null) {
             info.setFileSize(FileUtils.getFileSize(filePath));
             info.setFileMd5(FileUtils.getFileMd5(filePath));
@@ -57,16 +77,22 @@ public class MetaDataReader {
         return info;
     }
 
+    /** 解析标准 APK 文件。 */
     private static ApkMetaInfo parseApk(String filePath) {
         ApkParser parser = new ApkParser();
         return parser.parse(filePath);
     }
 
+    /** 将 APK 字节解析为元数据。 */
     private static ApkMetaInfo parseApkFromBytes(byte[] apkBytes) {
         ApkParser parser = new ApkParser();
         return parser.parseFromBytes(apkBytes);
     }
 
+    /**
+     * 解析 .apks 格式（Google Play 分发的 APK 集合，本质是 ZIP）。
+     * 从中提取 base APK，解析失败时以 ApkParser2 补全缺失字段。
+     */
     private static ApkMetaInfo parseApks(String filePath) {
         ZipFile zipFile = null;
         try {
@@ -74,6 +100,7 @@ public class MetaDataReader {
             byte[] baseApk = findBaseApk(zipFile);
             if (baseApk != null) {
                 ApkMetaInfo result = parseApkFromBytes(baseApk);
+                // 主解析器未能获取关键字段时，用备用解析器补全
                 if (result.getPackageName() == null || (result.getAppName() == null && result.getVersionName() == null)) {
                     ApkParser2 p2 = new ApkParser2();
                     ApkMetaInfo result2 = p2.parseFromBytes(baseApk);
@@ -95,26 +122,29 @@ public class MetaDataReader {
             return new ApkMetaInfo();
         } finally {
             if (zipFile != null) {
-                try { 
-                    zipFile.close(); 
-                } catch (Exception ignored) {}
+                try { zipFile.close(); } catch (Exception ignored) {}
             }
         }
     }
 
+    /**
+     * 解析 .xapk 格式（APKPure 分发格式）。
+     * 优先读取 manifest.json 中的字段，再从 base APK 补全缺失项。
+     */
     private static ApkMetaInfo parseXapk(String filePath) {
         ZipFile zipFile = null;
         try {
             zipFile = new ZipFile(filePath);
             ApkMetaInfo info = parseXapkManifest(zipFile);
             if (info == null) {
+                // 无 manifest.json 时，直接解析 base APK
                 byte[] baseApk = findBaseApk(zipFile);
                 if (baseApk != null) {
                     return parseApkFromBytes(baseApk);
                 }
                 return new ApkMetaInfo();
             }
-
+            // manifest.json 可能缺少 appName 或 SDK 版本，从 base APK 补全
             fillMissingFromBaseApk(zipFile, info);
             return info;
         } catch (Exception e) {
@@ -122,13 +152,15 @@ public class MetaDataReader {
             return new ApkMetaInfo();
         } finally {
             if (zipFile != null) {
-                try { 
-                    zipFile.close(); 
-                } catch (Exception ignored) {}
+                try { zipFile.close(); } catch (Exception ignored) {}
             }
         }
     }
 
+    /**
+     * 解析 .apkm 格式（APKMirror 分发格式，ZIP 包含多个 APK）。
+     * 提取 base APK 后按标准路径解析。
+     */
     private static ApkMetaInfo parseApkm(String filePath) {
         ZipFile zipFile = null;
         try {
@@ -143,13 +175,16 @@ public class MetaDataReader {
             return new ApkMetaInfo();
         } finally {
             if (zipFile != null) {
-                try { 
-                    zipFile.close(); 
-                } catch (Exception ignored) {}
+                try { zipFile.close(); } catch (Exception ignored) {}
             }
         }
     }
 
+    /**
+     * 将未知扩展名的文件作为 ZIP bundle 尝试解析。
+     * 依次尝试：base APK、manifest.json、所有 .apk 条目。
+     * 均失败时返回 null（调用方会回退到 parseApk）。
+     */
     private static ApkMetaInfo parseAsZipBundle(String filePath) {
         ZipFile zipFile = null;
         try {
@@ -162,6 +197,7 @@ public class MetaDataReader {
             ApkMetaInfo xapkInfo = parseXapkManifest(zipFile);
             if (xapkInfo != null) return xapkInfo;
 
+            // 遍历所有 .apk 条目，取第一个能成功解析包名的
             Enumeration<? extends ZipEntry> entries = zipFile.entries();
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
@@ -181,13 +217,15 @@ public class MetaDataReader {
             return null;
         } finally {
             if (zipFile != null) {
-                try { 
-                    zipFile.close(); 
-                } catch (Exception ignored) {}
+                try { zipFile.close(); } catch (Exception ignored) {}
             }
         }
     }
 
+    /**
+     * 解析 XAPK 中的 manifest.json，提取应用包名、版本、SDK 版本等字段。
+     * manifest.json 不存在或格式不符时返回 null。
+     */
     private static ApkMetaInfo parseXapkManifest(ZipFile zipFile) {
         try {
             ZipEntry manifestEntry = zipFile.getEntry("manifest.json");
@@ -249,6 +287,10 @@ public class MetaDataReader {
         }
     }
 
+    /**
+     * 从 ZIP 中的 base APK 补全 info 中尚未填充的字段。
+     * 用于 XAPK：manifest.json 提供部分信息，base APK 提供其余字段。
+     */
     private static void fillMissingFromBaseApk(ZipFile zipFile, ApkMetaInfo info) {
         byte[] baseApk = findBaseApk(zipFile);
         if (baseApk == null) return;
@@ -265,7 +307,17 @@ public class MetaDataReader {
         if (info.getCompileSdkVersion() == null) info.setCompileSdkVersion(apkInfo.getCompileSdkVersion());
     }
 
+    /**
+     * 在 ZIP bundle 中查找 base APK 字节。
+     *
+     * 查找策略（按优先级）：
+     *   1. 按固定名称列表查找（base.apk、base-master.apk 等）
+     *   2. 名称含 "base" 或 "master" 的 .apk 条目
+     *   3. 遍历所有 .apk 条目，验证其内部含 AndroidManifest.xml（即合法 APK）
+     *   4. 若以上均失败，返回第一个 .apk 条目
+     */
     private static byte[] findBaseApk(ZipFile zipFile) {
+        // 优先级 1：常见固定名称
         String[] baseNames = {
             "base-master.apk",
             "splits/base-master.apk",
@@ -273,12 +325,12 @@ public class MetaDataReader {
             "splits/base.apk",
             "master.apk"
         };
-
         for (String name : baseNames) {
             byte[] data = readZipEntryBytes(zipFile, name);
             if (data != null) return data;
         }
 
+        // 优先级 2：名称含 base 或 master 的 .apk
         Enumeration<? extends ZipEntry> entries = zipFile.entries();
         while (entries.hasMoreElements()) {
             ZipEntry entry = entries.nextElement();
@@ -290,6 +342,7 @@ public class MetaDataReader {
             }
         }
 
+        // 优先级 3：遍历所有 .apk 条目，用临时文件验证是否含 AndroidManifest.xml
         entries = zipFile.entries();
         ZipEntry firstApk = null;
         while (entries.hasMoreElements()) {
@@ -310,7 +363,7 @@ public class MetaDataReader {
                             ZipFile innerZip = new ZipFile(temp);
                             try {
                                 byte[] manifest = ApkParser.readZipEntry(innerZip, "AndroidManifest.xml");
-                                if (manifest != null) return data;
+                                if (manifest != null) return data; // 验证通过：是合法 APK
                             } finally {
                                 innerZip.close();
                             }
@@ -322,20 +375,24 @@ public class MetaDataReader {
             }
         }
 
+        // 优先级 4：回退到第一个 .apk 条目
         if (firstApk != null) {
             return readZipEntryBytes(zipFile, firstApk);
         }
         return null;
     }
 
+    /** 按名称读取 ZIP 条目字节，委托给 FileUtils。 */
     private static byte[] readZipEntryBytes(ZipFile zipFile, String entryName) {
         return FileUtils.readZipEntry(zipFile, entryName);
     }
 
+    /** 按 ZipEntry 读取 ZIP 条目字节，委托给 FileUtils。 */
     private static byte[] readZipEntryBytes(ZipFile zipFile, ZipEntry entry) {
         return FileUtils.readZipEntry(zipFile, entry);
     }
 
+    /** 命令行入口：java -jar ApksMetaDataReader.jar &lt;文件路径&gt; */
     public static void main(String[] args) {
         if (args.length == 0) {
             System.out.println("Usage: MetaDataReader <file_path>");

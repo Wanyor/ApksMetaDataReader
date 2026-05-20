@@ -5,8 +5,14 @@ import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
+/**
+ * ApkParser 的备用解析器：仅解析 AndroidManifest.xml，不读取 resources.arsc。
+ * 当 ApkParser 无法提取 packageName 或 appName 时作为回退使用。
+ * appName 在不查资源表的情况下可能得到资源引用（如 @0x7f040001）而非真实字符串。
+ */
 public class ApkParser2 {
 
+    /** 解析 APK 文件路径，返回提取到的元数据。 */
     public ApkMetaInfo parse(String apkPath) {
         ApkMetaInfo info = new ApkMetaInfo();
         ZipFile zf = null;
@@ -14,7 +20,7 @@ public class ApkParser2 {
             zf = new ZipFile(apkPath);
             byte[] manifestData = readEntry(zf, "AndroidManifest.xml");
             if (manifestData == null) return info;
-
+            // 仅用 BinaryXmlParser 解析清单，不提供资源表（appName 可能为引用字符串）
             BinaryXmlParser xmlParser = new BinaryXmlParser();
             Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData);
             extractMetadata(elements, info);
@@ -26,6 +32,10 @@ public class ApkParser2 {
         return info;
     }
 
+    /**
+     * 从内存字节解析 APK。
+     * 将字节写入临时文件后复用 parse()，临时文件在 finally 中保证删除。
+     */
     public ApkMetaInfo parseFromBytes(byte[] apkData) {
         File tempFile = null;
         try {
@@ -42,7 +52,9 @@ public class ApkParser2 {
         }
     }
 
+    /** 从解析出的 XML 元素中提取 packageName、versionCode、versionName、SDK 版本等字段。 */
     private void extractMetadata(Map<String, List<BinaryXmlParser.XmlAttribute>> elements, ApkMetaInfo info) {
+        // <manifest> 元素携带包名和版本信息
         List<BinaryXmlParser.XmlAttribute> manifestAttrs = elements.get("manifest");
         if (manifestAttrs != null) {
             for (BinaryXmlParser.XmlAttribute attr : manifestAttrs) {
@@ -69,6 +81,7 @@ public class ApkParser2 {
             }
         }
 
+        // <application> 元素携带 label（应用名称）
         List<BinaryXmlParser.XmlAttribute> appAttrs = elements.get("application");
         if (appAttrs != null) {
             for (BinaryXmlParser.XmlAttribute attr : appAttrs) {
@@ -78,6 +91,7 @@ public class ApkParser2 {
             }
         }
 
+        // <uses-sdk> 元素携带 SDK 版本
         List<BinaryXmlParser.XmlAttribute> sdkAttrs = elements.get("uses-sdk");
         if (sdkAttrs != null) {
             for (BinaryXmlParser.XmlAttribute attr : sdkAttrs) {
@@ -95,6 +109,7 @@ public class ApkParser2 {
         }
     }
 
+    /** 从 ZIP 中读取指定名称条目的字节，委托给 FileUtils。 */
     private byte[] readEntry(ZipFile zf, String name) {
         return FileUtils.readZipEntry(zf, name);
     }
