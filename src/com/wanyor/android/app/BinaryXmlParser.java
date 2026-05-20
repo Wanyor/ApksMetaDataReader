@@ -62,7 +62,7 @@ public class BinaryXmlParser {
         while (offset < data.length - 8) {
             type = FileUtils.readUShort(data, offset);
             int chunkSize = FileUtils.readInt(data, offset + 4);
-            if (chunkSize <= 0 || offset + chunkSize > data.length) break;
+            if (chunkSize < 8 || offset + chunkSize > data.length) break;
 
             if (type == RES_XML_RESOURCE_MAP_TYPE) {
                 parseResourceMap(data, offset);
@@ -85,16 +85,20 @@ public class BinaryXmlParser {
         if (type != RES_STRING_POOL_TYPE) return;
 
         int stringCount = FileUtils.readInt(data, offset + 8);
-        int styleCount = FileUtils.readInt(data, offset + 12);
+        if (stringCount <= 0 || stringCount > 65536) return;
         int flags = FileUtils.readInt(data, offset + 16);
         int stringsStart = FileUtils.readInt(data, offset + 20);
-        int stylesStart = FileUtils.readInt(data, offset + 24);
 
         boolean isUtf8 = (flags & 0x0100) != 0;
 
         int[] offsetsArray = new int[stringCount];
         for (int i = 0; i < stringCount; i++) {
-            offsetsArray[i] = FileUtils.readInt(data, offset + 28 + i * 4);
+            int offsetPos = offset + 28 + i * 4;
+            if (offsetPos + 4 > data.length) {
+                stringCount = i;
+                break;
+            }
+            offsetsArray[i] = FileUtils.readInt(data, offsetPos);
         }
 
         stringPool = new String[stringCount];
@@ -140,9 +144,8 @@ public class BinaryXmlParser {
                 charLen = ((charLen & 0x7FFF) << 16) | FileUtils.readUShort(data, strPos);
                 strPos += 2;
             }
-            int byteLen = charLen * 2;
-            int end = strPos + byteLen;
-            if (end > data.length) byteLen = Math.max(0, data.length - strPos);
+            int byteLen = (int) Math.min((long) charLen * 2, data.length - strPos);
+            if (byteLen <= 0) return "";
             byte[] strBytes = new byte[byteLen];
             System.arraycopy(data, strPos, strBytes, 0, byteLen);
             return new String(strBytes, "UTF-16LE");
@@ -155,6 +158,7 @@ public class BinaryXmlParser {
         int headerSize = FileUtils.readUShort(data, offset + 2);
         int chunkSize = FileUtils.readInt(data, offset + 4);
         int count = (chunkSize - headerSize) / 4;
+        if (count <= 0) return;
         resourceIds = new int[count];
         for (int i = 0; i < count; i++) {
             resourceIds[i] = FileUtils.readInt(data, offset + headerSize + i * 4);

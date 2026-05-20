@@ -106,7 +106,7 @@ public class ResourceTableParser {
         int entryCount  = FileUtils.readInt(data, typeStart + 12);
         int entriesStart= FileUtils.readInt(data, typeStart + 16);
 
-        if (entryCount <= 0 || entriesStart <= 0) return;
+        if (entryCount <= 0 || entryCount > 65536 || entriesStart <= 0) return;
 
         // Determine if this is the default (no-qualifier) config
         int configStart = typeStart + 20;
@@ -245,13 +245,16 @@ public class ResourceTableParser {
 
     private String[] parseStringPool(byte[] data, int offset) {
         int stringCount  = FileUtils.readInt(data, offset + 8);
+        if (stringCount <= 0 || stringCount > 500_000) return new String[0];
         int flags        = FileUtils.readInt(data, offset + 16);
         int stringsStart = FileUtils.readInt(data, offset + 20);
         boolean isUtf8   = (flags & 0x0100) != 0;
 
         String[] pool = new String[stringCount];
         for (int i = 0; i < stringCount; i++) {
-            int strOff = offset + stringsStart + FileUtils.readInt(data, offset + 28 + i * 4);
+            int offsetPos = offset + 28 + i * 4;
+            if (offsetPos + 4 > data.length) break;
+            int strOff = offset + stringsStart + FileUtils.readInt(data, offsetPos);
             if (strOff < 0 || strOff >= data.length) {
                 pool[i] = "";
                 continue;
@@ -290,7 +293,8 @@ public class ResourceTableParser {
                 charLen = ((charLen & 0x7FFF) << 16) | FileUtils.readUShort(data, strPos);
                 strPos += 2;
             }
-            int byteLen = Math.min(charLen * 2, data.length - strPos);
+            int byteLen = (int) Math.min((long) charLen * 2, data.length - strPos);
+            if (byteLen <= 0) return "";
             return new String(data, strPos, byteLen, "UTF-16LE");
         } catch (Exception e) {
             return "";

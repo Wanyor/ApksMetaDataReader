@@ -51,14 +51,24 @@ public class FileUtils {
         }
     }
 
+    private static final long MAX_ENTRY_BYTES = 512L * 1024 * 1024; // 512 MB
+
     static byte[] readZipEntry(ZipFile zipFile, ZipEntry entry) {
+        long declared = entry.getSize();
+        if (declared > MAX_ENTRY_BYTES) return null;
         InputStream is = null;
         try {
             is = zipFile.getInputStream(entry);
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            int capacity = declared > 0 ? (int) declared : 8192;
+            ByteArrayOutputStream bos = new ByteArrayOutputStream(capacity);
             byte[] buf = new byte[8192];
             int n;
-            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+            long total = 0;
+            while ((n = is.read(buf)) != -1) {
+                total += n;
+                if (total > MAX_ENTRY_BYTES) return null;
+                bos.write(buf, 0, n);
+            }
             return bos.toByteArray();
         } catch (Exception e) {
             return null;
