@@ -1,5 +1,6 @@
 package com.wanyor.android.app;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Enumeration;
@@ -7,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 /**
  * 标准 APK 解析器：同时解析 AndroidManifest.xml 和 resources.arsc，
@@ -52,22 +54,37 @@ public class ApkParser {
     }
 
     /**
-     * 从内存字节解析 APK。
-     * 将字节写入临时文件后复用 parse()，临时文件在 finally 中保证删除。
+     * 从内存字节解析 APK，直接用 ZipInputStream 扫描，避免写临时文件。
      */
     public ApkMetaInfo parseFromBytes(byte[] apkData) {
-        java.io.File tempFile = null;
         try {
-            tempFile = java.io.File.createTempFile("apk_parse_", ".apk");
-            tempFile.deleteOnExit();
-            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
-                fos.write(apkData);
+            byte[] manifestData = null;
+            byte[] arscData = null;
+            try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(apkData))) {
+                ZipEntry entry;
+                while ((entry = zis.getNextEntry()) != null) {
+                    String name = entry.getName();
+                    if ("AndroidManifest.xml".equals(name)) {
+                        manifestData = FileUtils.readFromZipInputStream(zis, entry);
+                    } else if ("resources.arsc".equals(name)) {
+                        arscData = FileUtils.readFromZipInputStream(zis, entry);
+                    }
+                    if (manifestData != null && arscData != null) break;
+                }
             }
-            return parse(tempFile.getAbsolutePath());
+            if (manifestData == null) return new ApkMetaInfo();
+            Map<Integer, String> resourceMap = null;
+            if (arscData != null) {
+                ResourceTableParser arscParser = new ResourceTableParser();
+                resourceMap = arscParser.parse(arscData);
+            }
+            BinaryXmlParser xmlParser = new BinaryXmlParser();
+            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, resourceMap);
+            ApkMetaInfo info = new ApkMetaInfo();
+            extractMetadata(elements, resourceMap, info);
+            return info;
         } catch (Exception e) {
             return new ApkMetaInfo();
-        } finally {
-            if (tempFile != null) tempFile.delete();
         }
     }
 
@@ -242,7 +259,7 @@ public class ApkParser {
                 if (name.contains(namePattern) && name.endsWith(".apk")) {
                     InputStream is = zipFile.getInputStream(entry);
                     ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    byte[] buffer = new byte[4096];
+                    byte[] buffer = new byte[8192];
                     int read;
                     while ((read = is.read(buffer)) != -1) {
                         bos.write(buffer, 0, read);

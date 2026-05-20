@@ -1,5 +1,6 @@
 package com.wanyor.android.app;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
@@ -7,6 +8,7 @@ import java.util.Enumeration;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 /**
  * 公共入口类：根据文件扩展名将解析请求路由到对应的解析器。
@@ -311,13 +313,13 @@ public class MetaDataReader {
      * 在 ZIP bundle 中查找 base APK 字节。
      *
      * 查找策略（按优先级）：
-     *   1. 按固定名称列表查找（base.apk、base-master.apk 等）
-     *   2. 名称含 "base" 或 "master" 的 .apk 条目
-     *   3. 遍历所有 .apk 条目，验证其内部含 AndroidManifest.xml（即合法 APK）
-     *   4. 若以上均失败，返回第一个 .apk 条目
+     *   1. 按固定名称列表 O(1) 直接查找（base.apk、base-master.apk 等）
+     *   2. 单次遍历：优先返回名称含 "base"/"master" 的 .apk；
+     *      否则返回首个通过 AndroidManifest.xml 内存校验的 .apk；
+     *      最终兜底返回第一个 .apk 条目
      */
     private static byte[] findBaseApk(ZipFile zipFile) {
-        // 优先级 1：常见固定名称
+        // 优先级 1：常见固定名称（O(1) 直接查找，无需遍历）
         String[] baseNames = {
             "base-master.apk",
             "splits/base-master.apk",
@@ -330,56 +332,52 @@ public class MetaDataReader {
             if (data != null) return data;
         }
 
-        // 优先级 2：名称含 base 或 master 的 .apk
+        // 单次遍历合并原有优先级 2/3/4
+        byte[] firstBaseMatch = null; // 名称含 "base"/"master" 的第一个 .apk
+        byte[] firstValidApk  = null; // 第一个通过 AndroidManifest.xml 校验的 .apk
+        byte[] firstApk       = null; // 兜底：第一个 .apk 条目
+
         Enumeration<? extends ZipEntry> entries = zipFile.entries();
         while (entries.hasMoreElements()) {
             ZipEntry entry = entries.nextElement();
-            String entryName = entry.getName().toLowerCase();
-            if (entryName.endsWith(".apk") &&
-                (entryName.contains("base") || entryName.contains("master"))) {
-                byte[] data = readZipEntryBytes(zipFile, entry);
-                if (data != null) return data;
+            String lowerName = entry.getName().toLowerCase();
+            if (!lowerName.endsWith(".apk")) continue;
+
+            byte[] data = readZipEntryBytes(zipFile, entry);
+            if (data == null) continue;
+
+            if (firstApk == null) firstApk = data;
+
+            if (firstBaseMatch == null && (lowerName.contains("base") || lowerName.contains("master"))) {
+                firstBaseMatch = data;
             }
+
+            if (firstValidApk == null && isValidApk(data)) {
+                firstValidApk = data;
+            }
+
+            // 已有命名匹配且已有合法校验结果，可提前退出
+            if (firstBaseMatch != null && firstValidApk != null) break;
         }
 
-        // 优先级 3：遍历所有 .apk 条目，用临时文件验证是否含 AndroidManifest.xml
-        entries = zipFile.entries();
-        ZipEntry firstApk = null;
-        while (entries.hasMoreElements()) {
-            ZipEntry entry = entries.nextElement();
-            if (entry.getName().toLowerCase().endsWith(".apk")) {
-                if (firstApk == null) {
-                    firstApk = entry;
-                }
-                byte[] data = readZipEntryBytes(zipFile, entry);
-                if (data != null) {
-                    try {
-                        java.io.File temp = java.io.File.createTempFile("apk_find_", ".apk");
-                        temp.deleteOnExit();
-                        try {
-                            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(temp)) {
-                                fos.write(data);
-                            }
-                            ZipFile innerZip = new ZipFile(temp);
-                            try {
-                                byte[] manifest = ApkParser.readZipEntry(innerZip, "AndroidManifest.xml");
-                                if (manifest != null) return data; // 验证通过：是合法 APK
-                            } finally {
-                                innerZip.close();
-                            }
-                        } finally {
-                            temp.delete();
-                        }
-                    } catch (Exception ignored) {}
-                }
-            }
-        }
+        if (firstBaseMatch != null) return firstBaseMatch;
+        if (firstValidApk  != null) return firstValidApk;
+        return firstApk;
+    }
 
-        // 优先级 4：回退到第一个 .apk 条目
-        if (firstApk != null) {
-            return readZipEntryBytes(zipFile, firstApk);
-        }
-        return null;
+    /**
+     * 用 ZipInputStream 在内存中校验字节数组是否为合法 APK
+     * （包含 AndroidManifest.xml 即认为合法）。
+     * 不写临时文件，不依赖文件系统。
+     */
+    private static boolean isValidApk(byte[] data) {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(data))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if ("AndroidManifest.xml".equals(entry.getName())) return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     /** 按名称读取 ZIP 条目字节，委托给 FileUtils。 */

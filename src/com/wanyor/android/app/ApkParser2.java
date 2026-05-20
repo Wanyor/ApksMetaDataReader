@@ -4,6 +4,7 @@ import java.io.*;
 import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 /**
  * ApkParser 的备用解析器：仅解析 AndroidManifest.xml，不读取 resources.arsc。
@@ -33,22 +34,28 @@ public class ApkParser2 {
     }
 
     /**
-     * 从内存字节解析 APK。
-     * 将字节写入临时文件后复用 parse()，临时文件在 finally 中保证删除。
+     * 从内存字节解析 APK，直接用 ZipInputStream 扫描，避免写临时文件。
      */
     public ApkMetaInfo parseFromBytes(byte[] apkData) {
-        File tempFile = null;
         try {
-            tempFile = File.createTempFile("apk_parse2_", ".apk");
-            tempFile.deleteOnExit();
-            try (FileOutputStream fos = new FileOutputStream(tempFile)) {
-                fos.write(apkData);
+            byte[] manifestData = null;
+            try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(apkData))) {
+                ZipEntry entry;
+                while ((entry = zis.getNextEntry()) != null) {
+                    if ("AndroidManifest.xml".equals(entry.getName())) {
+                        manifestData = FileUtils.readFromZipInputStream(zis, entry);
+                        break;
+                    }
+                }
             }
-            return parse(tempFile.getAbsolutePath());
+            if (manifestData == null) return new ApkMetaInfo();
+            BinaryXmlParser xmlParser = new BinaryXmlParser();
+            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData);
+            ApkMetaInfo info = new ApkMetaInfo();
+            extractMetadata(elements, info);
+            return info;
         } catch (Exception e) {
             return new ApkMetaInfo();
-        } finally {
-            if (tempFile != null) tempFile.delete();
         }
     }
 
