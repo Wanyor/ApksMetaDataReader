@@ -27,18 +27,18 @@ public class ApkParser2 {
     }
 
     public ApkMetaInfo parseFromBytes(byte[] apkData) {
+        File tempFile = null;
         try {
-            File tempFile = File.createTempFile("apk_parse2_", ".apk");
+            tempFile = File.createTempFile("apk_parse2_", ".apk");
             tempFile.deleteOnExit();
             try (FileOutputStream fos = new FileOutputStream(tempFile)) {
                 fos.write(apkData);
             }
-            ApkMetaInfo result = parse(tempFile.getAbsolutePath());
-            tempFile.delete();
-            return result;
+            return parse(tempFile.getAbsolutePath());
         } catch (Exception e) {
-            e.printStackTrace();
             return new ApkMetaInfo();
+        } finally {
+            if (tempFile != null) tempFile.delete();
         }
     }
 
@@ -96,18 +96,6 @@ public class ApkParser2 {
     }
 
     private byte[] readEntry(ZipFile zf, String name) {
-        try {
-            ZipEntry entry = zf.getEntry(name);
-            if (entry == null) return null;
-            InputStream is = zf.getInputStream(entry);
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
-            is.close();
-            return baos.toByteArray();
-        } catch (Exception e) {
-            return null;
-        }
+        return FileUtils.readZipEntry(zf, name);
     }
 }

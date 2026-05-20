@@ -303,17 +303,20 @@ public class MetaDataReader {
                     try {
                         java.io.File temp = java.io.File.createTempFile("apk_find_", ".apk");
                         temp.deleteOnExit();
-                        java.io.FileOutputStream fos = new java.io.FileOutputStream(temp);
-                        fos.write(data);
-                        fos.close();
-                        ZipFile innerZip = new ZipFile(temp);
-                        byte[] manifest = ApkParser.readZipEntry(innerZip, "AndroidManifest.xml");
-                        innerZip.close();
-                        if (manifest != null) {
+                        try {
+                            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(temp)) {
+                                fos.write(data);
+                            }
+                            ZipFile innerZip = new ZipFile(temp);
+                            try {
+                                byte[] manifest = ApkParser.readZipEntry(innerZip, "AndroidManifest.xml");
+                                if (manifest != null) return data;
+                            } finally {
+                                innerZip.close();
+                            }
+                        } finally {
                             temp.delete();
-                            return data;
                         }
-                        temp.delete();
                     } catch (Exception ignored) {}
                 }
             }
@@ -326,31 +329,11 @@ public class MetaDataReader {
     }
 
     private static byte[] readZipEntryBytes(ZipFile zipFile, String entryName) {
-        try {
-            ZipEntry entry = zipFile.getEntry(entryName);
-            if (entry == null) return null;
-            return readZipEntryBytes(zipFile, entry);
-        } catch (Exception e) {
-            return null;
-        }
+        return FileUtils.readZipEntry(zipFile, entryName);
     }
 
     private static byte[] readZipEntryBytes(ZipFile zipFile, ZipEntry entry) {
-        InputStream is = null;
-        try {
-            is = zipFile.getInputStream(entry);
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[4096];
-            int r;
-            while ((r = is.read(buf)) != -1) bos.write(buf, 0, r);
-            return bos.toByteArray();
-        } catch (Exception e) {
-            return null;
-        } finally {
-            if (is != null) {
-                try { is.close(); } catch (Exception ignored) {}
-            }
-        }
+        return FileUtils.readZipEntry(zipFile, entry);
     }
 
     public static void main(String[] args) {

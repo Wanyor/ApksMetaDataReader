@@ -41,19 +41,19 @@ public class ApkParser {
     }
 
     public ApkMetaInfo parseFromBytes(byte[] apkData) {
-        ApkMetaInfo info = new ApkMetaInfo();
+        java.io.File tempFile = null;
         try {
-            java.io.File tempFile = java.io.File.createTempFile("apk_parse_", ".apk");
+            tempFile = java.io.File.createTempFile("apk_parse_", ".apk");
             tempFile.deleteOnExit();
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile);
-            fos.write(apkData);
-            fos.close();
-            info = parse(tempFile.getAbsolutePath());
-            tempFile.delete();
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
+                fos.write(apkData);
+            }
+            return parse(tempFile.getAbsolutePath());
         } catch (Exception e) {
-            e.printStackTrace();
+            return new ApkMetaInfo();
+        } finally {
+            if (tempFile != null) tempFile.delete();
         }
-        return info;
     }
 
     private void extractMetadata(Map<String, List<BinaryXmlParser.XmlAttribute>> elements,
@@ -196,21 +196,7 @@ public class ApkParser {
     }
 
     static byte[] readZipEntry(ZipFile zipFile, String entryName) {
-        try {
-            ZipEntry entry = zipFile.getEntry(entryName);
-            if (entry == null) return null;
-            InputStream is = zipFile.getInputStream(entry);
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buffer = new byte[4096];
-            int read;
-            while ((read = is.read(buffer)) != -1) {
-                bos.write(buffer, 0, read);
-            }
-            is.close();
-            return bos.toByteArray();
-        } catch (Exception e) {
-            return null;
-        }
+        return FileUtils.readZipEntry(zipFile, entryName);
     }
 
     static byte[] readFirstMatchingEntry(ZipFile zipFile, String namePattern) {

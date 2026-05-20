@@ -225,10 +225,6 @@ public class BinaryXmlParser {
         }
         switch (valueType) {
             case TYPE_STRING:
-                if (valueData > 0xFF) {
-                    String resolved = resolveResourceRef(valueData);
-                    return resolved != null ? resolved : getString(valueData);
-                }
                 return getString(valueData);
             case TYPE_INT_DEC:
                 return String.valueOf(valueData);
@@ -262,8 +258,6 @@ public class BinaryXmlParser {
         }
         if (externalResourceMap != null) {
             String val = externalResourceMap.get(refId);
-            if (val != null) return val;
-            val = externalResourceMap.get(refId & 0xFFFF);
             if (val != null) return val;
         }
         return null;

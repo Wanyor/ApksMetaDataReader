@@ -76,6 +76,8 @@ public class SimpleJsonParser {
                 } else {
                     i++;
                 }
+            } else if (c == '[' || c == '{') {
+                i = skipNested(json, i);
             } else {
                 i++;
             }
@@ -92,6 +94,28 @@ public class SimpleJsonParser {
                 i++;
             } else {
                 break;
+            }
+        }
+        return i;
+    }
+
+    private static int skipNested(String s, int start) {
+        char open = s.charAt(start);
+        char close = open == '[' ? ']' : '}';
+        int depth = 1;
+        int i = start + 1;
+        while (i < s.length() && depth > 0) {
+            char c = s.charAt(i);
+            if (c == '"') {
+                i = findStringEnd(s, i + 1) + 1;
+            } else if (c == open) {
+                depth++;
+                i++;
+            } else if (c == close) {
+                depth--;
+                i++;
+            } else {
+                i++;
             }
         }
         return i;

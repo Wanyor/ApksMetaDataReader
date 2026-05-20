@@ -1,10 +1,14 @@
 package com.wanyor.android.app;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 public class FileUtils {
 
@@ -34,6 +38,32 @@ public class FileUtils {
             if (fis != null) {
                 try { fis.close(); } catch (IOException ignored) {}
             }
+        }
+    }
+
+    static byte[] readZipEntry(ZipFile zipFile, String entryName) {
+        try {
+            ZipEntry entry = zipFile.getEntry(entryName);
+            if (entry == null) return null;
+            return readZipEntry(zipFile, entry);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    static byte[] readZipEntry(ZipFile zipFile, ZipEntry entry) {
+        InputStream is = null;
+        try {
+            is = zipFile.getInputStream(entry);
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (is != null) try { is.close(); } catch (Exception ignored) {}
         }
     }
 
