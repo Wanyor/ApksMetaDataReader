@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="ArtifactManager">
+  <artifact type="jar" name="ApksMetaDataReader:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/ApksMetaDataReader_jar</output-path>
+    <root id="archive" name="ApksMetaDataReader.jar">
+      <element id="module-output" name="ApksMetaDataReader" />
+    </root>
+    <properties>
+      <option name="MAIN_CLASS_NAME" value="com.wanyor.android.app.MetaDataReader" />
+    </properties>
+  </artifact>
+</component>
