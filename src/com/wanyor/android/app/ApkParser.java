@@ -52,7 +52,7 @@ public class ApkParser {
             Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, resourceMap, MANIFEST_TARGETS);
             extractMetadata(elements, resourceMap, info);
         } catch (Exception e) {
-            e.printStackTrace();
+            // 静默失败，调用方视返回的 info 字段是否为 null 决定是否回退到 ApkParser2
         } finally {
             if (zipFile != null) {
                 try { zipFile.close(); } catch (Exception ignored) {}

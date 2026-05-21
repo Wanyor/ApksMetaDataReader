@@ -63,10 +63,12 @@ public class MetaDataReader {
                 info = parseApkm(filePath);
                 break;
             default:
-                // 未知扩展名：先尝试作为 ZIP bundle 处理，再回退到直接解析
+                // 未知扩展名：尝试作为 ZIP bundle 处理；非 ZIP 格式则拒绝
                 info = parseAsZipBundle(filePath);
                 if (info == null) {
-                    info = parseApk(filePath);
+                    throw new IllegalArgumentException(
+                        "Unsupported or invalid file format: " + filePath
+                        + "  (supported: .apk  .apks  .xapk  .apkm)");
                 }
                 break;
         }
