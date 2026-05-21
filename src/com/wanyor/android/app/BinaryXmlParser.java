@@ -134,6 +134,7 @@ public class BinaryXmlParser {
         if (FileUtils.readUShort(data, offset) != RES_STRING_POOL_TYPE) return;
 
         int stringCount = FileUtils.readInt(data, offset + 8);
+        // AXML 字符串池实际上限：Android 编译器通常产生远少于 65536 条目的 AXML 文件
         if (stringCount <= 0 || stringCount > 65536) return;
         int flags        = FileUtils.readInt(data, offset + 16);
         int stringsStart = FileUtils.readInt(data, offset + 20);

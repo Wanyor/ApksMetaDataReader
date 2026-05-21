@@ -310,6 +310,7 @@ public class ResourceTableParser {
      */
     private void parseStringPool(byte[] data, int offset) {
         int stringCount  = FileUtils.readInt(data, offset + 8);
+        // resources.arsc 全局字符串池可合法包含数万条目（资源名+路径+应用字符串），上限设 500000
         if (stringCount <= 0 || stringCount > 500_000) return;
         int flags        = FileUtils.readInt(data, offset + 16);
         int stringsStart = FileUtils.readInt(data, offset + 20);

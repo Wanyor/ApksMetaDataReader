@@ -122,7 +122,7 @@ public class MetaDataReader {
             }
             return new ApkMetaInfo();
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("[warn] parseApks failed: " + e.getMessage());
             return new ApkMetaInfo();
         } finally {
             if (zipFile != null) {
@@ -152,7 +152,7 @@ public class MetaDataReader {
             fillMissingFromBaseApk(zipFile, info);
             return info;
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("[warn] parseXapk failed: " + e.getMessage());
             return new ApkMetaInfo();
         } finally {
             if (zipFile != null) {
@@ -175,7 +175,7 @@ public class MetaDataReader {
             }
             return new ApkMetaInfo();
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("[warn] parseApkm failed: " + e.getMessage());
             return new ApkMetaInfo();
         } finally {
             if (zipFile != null) {

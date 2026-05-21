@@ -31,7 +31,7 @@ public class SimpleJsonParser {
             if (json.charAt(i) != '"') break;
             int keyStart = i + 1;
             int keyEnd = findStringEnd(json, keyStart);
-            String key = json.substring(keyStart, keyEnd);
+            String key = unescapeString(json, keyStart, keyEnd);
             i = keyEnd + 1; // 跳过结束引号
             i = skipWhitespace(json, i);
             if (i >= len || json.charAt(i) != ':') break;
@@ -43,7 +43,7 @@ public class SimpleJsonParser {
                 // 字符串值
                 int valStart = i + 1;
                 int valEnd = findStringEnd(json, valStart);
-                result.put(key, json.substring(valStart, valEnd));
+                result.put(key, unescapeString(json, valStart, valEnd));
                 i = valEnd + 1;
             } else if (c == '-' || Character.isDigit(c)) {
                 // 数值：判断是整数还是浮点数
@@ -140,6 +140,56 @@ public class SimpleJsonParser {
             }
         }
         return i;
+    }
+
+    /**
+     * 将 JSON 字符串原始内容（不含外层引号）转义序列还原为 Java 字符串。
+     * 支持：\" \\ \/ \n \r \t \b \f 及四位十六进制 Unicode 转义。
+     */
+    private static String unescapeString(String s, int start, int end) {
+        // 快速路径：无反斜杠时直接 substring
+        boolean hasEscape = false;
+        for (int i = start; i < end; i++) {
+            if (s.charAt(i) == '\\') { hasEscape = true; break; }
+        }
+        if (!hasEscape) return s.substring(start, end);
+
+        StringBuilder sb = new StringBuilder(end - start);
+        int i = start;
+        while (i < end) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < end) {
+                char esc = s.charAt(i + 1);
+                switch (esc) {
+                    case '"':  sb.append('"');  i += 2; break;
+                    case '\\': sb.append('\\'); i += 2; break;
+                    case '/':  sb.append('/');  i += 2; break;
+                    case 'n':  sb.append('\n'); i += 2; break;
+                    case 'r':  sb.append('\r'); i += 2; break;
+                    case 't':  sb.append('\t'); i += 2; break;
+                    case 'b':  sb.append('\b'); i += 2; break;
+                    case 'f':  sb.append('\f'); i += 2; break;
+                    case 'u':
+                        if (i + 5 < end) {
+                            try {
+                                int cp = Integer.parseInt(s.substring(i + 2, i + 6), 16);
+                                sb.append((char) cp);
+                                i += 6;
+                            } catch (NumberFormatException e) {
+                                sb.append(c); i++;
+                            }
+                        } else {
+                            sb.append(c); i++;
+                        }
+                        break;
+                    default:
+                        sb.append(c); i++;
+                }
+            } else {
+                sb.append(c); i++;
+            }
+        }
+        return sb.toString();
     }
 
     /**
