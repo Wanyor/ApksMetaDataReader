@@ -104,4 +104,46 @@ public class ApkMetaInfo {
         sb.append('}');
         return sb.toString();
     }
+
+    /** 将元数据序列化为 JSON 对象字符串，包含 file 字段。 */
+    public String toJson(String filePath) {
+        StringBuilder sb = new StringBuilder("{\n");
+        sb.append("  \"file\": ").append(jsonEscape(filePath)).append(",\n");
+        sb.append("  \"appName\": ").append(jsonEscape(appName)).append(",\n");
+        sb.append("  \"packageName\": ").append(jsonEscape(packageName)).append(",\n");
+        sb.append("  \"versionCode\": ").append(versionCode == null ? "null" : String.valueOf(versionCode)).append(",\n");
+        sb.append("  \"versionName\": ").append(jsonEscape(versionName)).append(",\n");
+        sb.append("  \"minSdkVersion\": ").append(jsonEscape(minSdkVersion)).append(",\n");
+        sb.append("  \"targetSdkVersion\": ").append(jsonEscape(targetSdkVersion)).append(",\n");
+        sb.append("  \"compileSdkVersion\": ").append(jsonEscape(compileSdkVersion)).append(",\n");
+        sb.append("  \"fileSize\": ").append(fileSize).append(",\n");
+        sb.append("  \"fileMd5\": ").append(jsonEscape(fileMd5)).append("\n");
+        sb.append("}");
+        return sb.toString();
+    }
+
+    /** 生成表示解析错误的 JSON 对象，包含 file 和 error 字段。 */
+    static String errorJson(String filePath, String message) {
+        return "{\n" +
+               "  \"file\": " + jsonEscape(filePath) + ",\n" +
+               "  \"error\": " + jsonEscape(message) + "\n" +
+               "}";
+    }
+
+    /** JSON 字符串转义：处理引号、反斜杠、控制字符。 */
+    static String jsonEscape(String s) {
+        if (s == null) return "null";
+        StringBuilder sb = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if      (c == '"')  sb.append("\\\"");
+            else if (c == '\\') sb.append("\\\\");
+            else if (c == '\n') sb.append("\\n");
+            else if (c == '\r') sb.append("\\r");
+            else if (c == '\t') sb.append("\\t");
+            else if (c < 0x20)  sb.append(String.format("\\u%04x", (int) c));
+            else                sb.append(c);
+        }
+        return sb.append('"').toString();
+    }
 }

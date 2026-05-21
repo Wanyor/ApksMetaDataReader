@@ -2,9 +2,11 @@ package com.wanyor.android.app;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.zip.ZipEntry;
@@ -22,29 +24,28 @@ public class FileUtils {
         return new File(filePath).length();
     }
 
-    /** 计算文件的 MD5 摘要，返回小写十六进制字符串；出错返回 null。 */
+    private static final char[] HEX_CHARS = "0123456789abcdef".toCharArray();
+
+    /** 计算文件的 MD5 摘要，使用 FileChannel 大缓冲区 + 查表十六进制转换，返回小写十六进制字符串；出错返回 null。 */
     public static String getFileMd5(String filePath) {
-        FileInputStream fis = null;
-        try {
+        try (FileChannel channel = FileChannel.open(Paths.get(filePath))) {
             MessageDigest md = MessageDigest.getInstance("MD5");
-            fis = new FileInputStream(filePath);
-            byte[] buffer = new byte[65536];
-            int read;
-            while ((read = fis.read(buffer)) != -1) {
-                md.update(buffer, 0, read);
+            ByteBuffer buf = ByteBuffer.allocateDirect(524288); // 512KB direct buffer
+            while (channel.read(buf) != -1) {
+                buf.flip();
+                md.update(buf);
+                buf.clear();
             }
             byte[] digest = md.digest();
-            StringBuilder sb = new StringBuilder();
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b));
+            char[] hex = new char[32];
+            for (int i = 0; i < 16; i++) {
+                int b = digest[i] & 0xFF;
+                hex[i * 2]     = HEX_CHARS[b >>> 4];
+                hex[i * 2 + 1] = HEX_CHARS[b & 0x0F];
             }
-            return sb.toString();
+            return new String(hex);
         } catch (NoSuchAlgorithmException | IOException e) {
             return null;
-        } finally {
-            if (fis != null) {
-                try { fis.close(); } catch (IOException ignored) {}
-            }
         }
     }
 
@@ -71,7 +72,7 @@ public class FileUtils {
             is = zipFile.getInputStream(entry);
             int capacity = declared > 0 ? (int) declared : 8192;
             ByteArrayOutputStream bos = new ByteArrayOutputStream(capacity);
-            byte[] buf = new byte[8192];
+            byte[] buf = new byte[declared > 8192 ? 65536 : 8192];
             int n;
             long total = 0;
             while ((n = is.read(buf)) != -1) {
@@ -96,7 +97,7 @@ public class FileUtils {
         if (declared > MAX_ENTRY_BYTES) return null;
         int capacity = declared > 0 ? (int) declared : 8192;
         ByteArrayOutputStream bos = new ByteArrayOutputStream(capacity);
-        byte[] buf = new byte[8192];
+        byte[] buf = new byte[declared > 8192 ? 65536 : 8192];
         int n;
         long total = 0;
         while ((n = zis.read(buf)) != -1) {
