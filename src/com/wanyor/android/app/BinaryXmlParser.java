@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Android 二进制 XML（AXML）解析器。
@@ -51,13 +52,15 @@ public class BinaryXmlParser {
     private static final int TYPE_INT_COLOR_ARGB4 = 0x1e;
     private static final int TYPE_INT_COLOR_RGB4  = 0x1f;
 
-    /** 当前文件的字符串池，由 parseStringPool 填充。 */
-    private String[] stringPool;
-    /** 属性索引→资源 ID 映射，由 parseResourceMap 填充。 */
+    // 惰性字符串池：parseStringPool 只存偏移，getString 按需解码并缓存
+    private byte[]   poolData;
+    private int      poolStrDataStart;
+    private boolean  poolIsUtf8;
+    private int[]    poolOffsets;
+    private String[] poolCache;
+    private int      poolCount;
     private int[] resourceIds;
-    /** resourceIds 的反向映射（资源 ID → 字符串池下标），O(1) 查找用。 */
     private Map<Integer, Integer> resourceIdIndex;
-    /** 外部资源表（来自 resources.arsc），用于解析资源引用。 */
     private Map<Integer, String> externalResourceMap;
 
     /**
@@ -68,13 +71,18 @@ public class BinaryXmlParser {
         return parse(data, null);
     }
 
+    public Map<String, List<XmlAttribute>> parse(byte[] data, Map<Integer, String> resourceMap) {
+        return parse(data, resourceMap, null);
+    }
+
     /**
      * 解析 AXML 字节，并使用外部资源表解析资源引用。
-     * @param data        AndroidManifest.xml 的原始字节
-     * @param resourceMap resources.arsc 解析出的资源 ID→字符串映射，可为 null
+     * @param data             AndroidManifest.xml 的原始字节
+     * @param resourceMap      resources.arsc 解析出的资源 ID→字符串映射，可为 null
+     * @param stopWhenAllFound 所有目标元素均出现后立即停止；null 表示解析全文件
      * @return 元素名 → 属性列表的映射
      */
-    public Map<String, List<XmlAttribute>> parse(byte[] data, Map<Integer, String> resourceMap) {
+    public Map<String, List<XmlAttribute>> parse(byte[] data, Map<Integer, String> resourceMap, Set<String> stopWhenAllFound) {
         this.externalResourceMap = resourceMap;
         Map<String, List<XmlAttribute>> elements = new HashMap<>();
         if (data == null || data.length < 8) return elements;
@@ -106,6 +114,7 @@ public class BinaryXmlParser {
                 parseResourceMap(data, offset);
             } else if (type == RES_XML_START_ELEMENT_TYPE) {
                 parseStartElement(data, offset, elements);
+                if (stopWhenAllFound != null && elements.keySet().containsAll(stopWhenAllFound)) break;
             } else if (type == RES_STRING_POOL_TYPE) {
                 parseStringPool(data, offset);
             }
@@ -117,43 +126,32 @@ public class BinaryXmlParser {
     }
 
     /**
-     * 解析字符串池 chunk（ResStringPool_header）。
+     * 解析字符串池 chunk，仅存储偏移量数组，不立即解码字符串（惰性解码）。
      * 支持 UTF-8（flag 0x100）和 UTF-16LE 两种编码。
      * 安全限制：stringCount 超过 65536 时拒绝解析，防止 OOM。
      */
     private void parseStringPool(byte[] data, int offset) {
-        int type = FileUtils.readUShort(data, offset);
-        int headerSize = FileUtils.readUShort(data, offset + 2);
-        int chunkSize = FileUtils.readInt(data, offset + 4);
-        if (type != RES_STRING_POOL_TYPE) return;
+        if (FileUtils.readUShort(data, offset) != RES_STRING_POOL_TYPE) return;
 
         int stringCount = FileUtils.readInt(data, offset + 8);
-        // 安全边界：防止畸形数据触发超大数组分配
         if (stringCount <= 0 || stringCount > 65536) return;
-        int flags = FileUtils.readInt(data, offset + 16);
+        int flags        = FileUtils.readInt(data, offset + 16);
         int stringsStart = FileUtils.readInt(data, offset + 20);
 
-        boolean isUtf8 = (flags & 0x0100) != 0;
+        poolData         = data;
+        poolIsUtf8       = (flags & 0x0100) != 0;
+        poolStrDataStart = offset + stringsStart;
+        poolCount        = stringCount;
+        poolOffsets      = new int[stringCount];
+        poolCache        = new String[stringCount];
 
-        // 读取字符串偏移数组（每项 4 字节，相对 stringsStart 的偏移）
-        int[] offsetsArray = new int[stringCount];
         for (int i = 0; i < stringCount; i++) {
             int offsetPos = offset + 28 + i * 4;
             if (offsetPos + 4 > data.length) {
-                stringCount = i; // 数据不足，截断
+                poolCount = i;
                 break;
             }
-            offsetsArray[i] = FileUtils.readInt(data, offsetPos);
-        }
-
-        stringPool = new String[stringCount];
-        for (int i = 0; i < stringCount; i++) {
-            int strOffset = offset + stringsStart + offsetsArray[i];
-            if (strOffset < 0 || strOffset >= data.length) {
-                stringPool[i] = "";
-                continue;
-            }
-            stringPool[i] = isUtf8 ? readUtf8String(data, strOffset) : readUtf16String(data, strOffset);
+            poolOffsets[i] = FileUtils.readInt(data, offsetPos);
         }
     }
 
@@ -178,11 +176,8 @@ public class BinaryXmlParser {
                 byteLen = ((byteLen & 0x7F) << 8) | (data[bytePos] & 0xFF);
                 bytePos++;
             }
-            int end = bytePos + byteLen;
-            if (end > data.length) end = data.length;
-            byte[] strBytes = new byte[byteLen];
-            System.arraycopy(data, bytePos, strBytes, 0, Math.min(byteLen, data.length - bytePos));
-            return new String(strBytes, "UTF-8");
+            int actualLen = Math.min(byteLen, data.length - bytePos);
+            return new String(data, bytePos, actualLen, "UTF-8");
         } catch (Exception e) {
             return "";
         }
@@ -205,9 +200,7 @@ public class BinaryXmlParser {
             // 用 long 乘法防止 charLen * 2 溢出后截断为负值
             int byteLen = (int) Math.min((long) charLen * 2, data.length - strPos);
             if (byteLen <= 0) return "";
-            byte[] strBytes = new byte[byteLen];
-            System.arraycopy(data, strPos, strBytes, 0, byteLen);
-            return new String(strBytes, "UTF-16LE");
+            return new String(data, strPos, byteLen, "UTF-16LE");
         } catch (Exception e) {
             return "";
         }
@@ -281,10 +274,7 @@ public class BinaryXmlParser {
             attrs.add(attr);
         }
 
-        if (!elements.containsKey(elementName)) {
-            elements.put(elementName, new ArrayList<>());
-        }
-        elements.get(elementName).addAll(attrs);
+        elements.computeIfAbsent(elementName, k -> new ArrayList<>()).addAll(attrs);
     }
 
     /**
@@ -379,10 +369,14 @@ public class BinaryXmlParser {
         return val + unitStr;
     }
 
-    /** 从字符串池中按索引取字符串；索引越界或池未初始化时返回 null。 */
+    /** 按索引惰性解码字符串池条目；首次访问时解码并缓存，越界返回 null。 */
     String getString(int index) {
-        if (stringPool == null || index < 0 || index >= stringPool.length) return null;
-        return stringPool[index];
+        if (poolOffsets == null || index < 0 || index >= poolCount) return null;
+        if (poolCache[index] != null) return poolCache[index];
+        int strOff = poolStrDataStart + poolOffsets[index];
+        if (strOff < 0 || strOff >= poolData.length) return null;
+        String s = poolIsUtf8 ? readUtf8String(poolData, strOff) : readUtf16String(poolData, strOff);
+        return (poolCache[index] = (s != null ? s : ""));
     }
 
     /** 从资源 ID 映射中按索引取资源 ID；越界时返回 0。 */

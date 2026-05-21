@@ -13,6 +13,15 @@ import java.util.zip.ZipInputStream;
  */
 public class ApkParser2 {
 
+    private static final Set<String> MANIFEST_TARGETS;
+    static {
+        Set<String> s = new HashSet<>();
+        s.add("manifest");
+        s.add("uses-sdk");
+        s.add("application");
+        MANIFEST_TARGETS = Collections.unmodifiableSet(s);
+    }
+
     /** 解析 APK 文件路径，返回提取到的元数据。 */
     public ApkMetaInfo parse(String apkPath) {
         ApkMetaInfo info = new ApkMetaInfo();
@@ -23,7 +32,7 @@ public class ApkParser2 {
             if (manifestData == null) return info;
             // 仅用 BinaryXmlParser 解析清单，不提供资源表（appName 可能为引用字符串）
             BinaryXmlParser xmlParser = new BinaryXmlParser();
-            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData);
+            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, null, MANIFEST_TARGETS);
             extractMetadata(elements, info);
         } catch (Exception e) {
             e.printStackTrace();
@@ -50,7 +59,7 @@ public class ApkParser2 {
             }
             if (manifestData == null) return new ApkMetaInfo();
             BinaryXmlParser xmlParser = new BinaryXmlParser();
-            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData);
+            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, null, MANIFEST_TARGETS);
             ApkMetaInfo info = new ApkMetaInfo();
             extractMetadata(elements, info);
             return info;

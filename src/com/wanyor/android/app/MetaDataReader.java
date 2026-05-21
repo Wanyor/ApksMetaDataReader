@@ -1,10 +1,10 @@
 package com.wanyor.android.app;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -233,57 +233,46 @@ public class MetaDataReader {
             ZipEntry manifestEntry = zipFile.getEntry("manifest.json");
             if (manifestEntry == null) return null;
 
-            InputStream is = null;
-            try {
-                is = zipFile.getInputStream(manifestEntry);
-                ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                byte[] buf = new byte[4096];
-                int r;
-                while ((r = is.read(buf)) != -1) bos.write(buf, 0, r);
+            byte[] manifestBytes = FileUtils.readZipEntry(zipFile, manifestEntry);
+            if (manifestBytes == null) return null;
+            String json = new String(manifestBytes, "UTF-8");
+            Map<String, Object> map = SimpleJsonParser.parse(json);
+            if (map.isEmpty()) return null;
 
-                String json = bos.toString("UTF-8");
-                Map<String, Object> map = SimpleJsonParser.parse(json);
-                if (map.isEmpty()) return null;
+            ApkMetaInfo info = new ApkMetaInfo();
 
-                ApkMetaInfo info = new ApkMetaInfo();
+            Object pkgName = map.get("package_name");
+            if (pkgName != null) info.setPackageName(pkgName.toString());
 
-                Object pkgName = map.get("package_name");
-                if (pkgName != null) info.setPackageName(pkgName.toString());
+            Object appName = map.get("name");
+            if (appName != null) info.setAppName(appName.toString());
 
-                Object appName = map.get("name");
-                if (appName != null) info.setAppName(appName.toString());
-
-                Object verCode = map.get("version_code");
-                if (verCode != null) {
-                    if (verCode instanceof Long) info.setVersionCode((Long) verCode);
-                    else if (verCode instanceof Number) info.setVersionCode(((Number) verCode).longValue());
-                    else {
-                        try { info.setVersionCode(Long.parseLong(verCode.toString())); }
-                        catch (NumberFormatException ignored) {}
-                    }
-                }
-
-                Object verName = map.get("version_name");
-                if (verName != null) info.setVersionName(verName.toString());
-
-                Object minSdk = map.get("min_sdk_version");
-                if (minSdk != null) {
-                    if (minSdk instanceof Number) info.setMinSdkVersion(String.valueOf(((Number) minSdk).intValue()));
-                    else info.setMinSdkVersion(minSdk.toString());
-                }
-
-                Object targetSdk = map.get("target_sdk_version");
-                if (targetSdk != null) {
-                    if (targetSdk instanceof Number) info.setTargetSdkVersion(String.valueOf(((Number) targetSdk).intValue()));
-                    else info.setTargetSdkVersion(targetSdk.toString());
-                }
-
-                return info;
-            } finally {
-                if (is != null) {
-                    try { is.close(); } catch (Exception ignored) {}
+            Object verCode = map.get("version_code");
+            if (verCode != null) {
+                if (verCode instanceof Long) info.setVersionCode((Long) verCode);
+                else if (verCode instanceof Number) info.setVersionCode(((Number) verCode).longValue());
+                else {
+                    try { info.setVersionCode(Long.parseLong(verCode.toString())); }
+                    catch (NumberFormatException ignored) {}
                 }
             }
+
+            Object verName = map.get("version_name");
+            if (verName != null) info.setVersionName(verName.toString());
+
+            Object minSdk = map.get("min_sdk_version");
+            if (minSdk != null) {
+                if (minSdk instanceof Number) info.setMinSdkVersion(String.valueOf(((Number) minSdk).intValue()));
+                else info.setMinSdkVersion(minSdk.toString());
+            }
+
+            Object targetSdk = map.get("target_sdk_version");
+            if (targetSdk != null) {
+                if (targetSdk instanceof Number) info.setTargetSdkVersion(String.valueOf(((Number) targetSdk).intValue()));
+                else info.setTargetSdkVersion(targetSdk.toString());
+            }
+
+            return info;
         } catch (Exception e) {
             return null;
         }
@@ -390,20 +379,100 @@ public class MetaDataReader {
         return FileUtils.readZipEntry(zipFile, entry);
     }
 
-    /** 命令行入口：java -jar ApksMetaDataReader.jar &lt;文件路径&gt; */
+    /**
+     * 命令行入口。
+     *
+     * 用法：java -jar ApksMetaDataReader.jar [--json] &lt;file&gt; [file ...]
+     *   --json   JSON 格式输出（默认：文本格式）
+     *
+     * 支持批量分析：传入多个文件路径时，文本模式以 "=== path ===" 分隔，
+     * JSON 模式输出对象数组。任意文件解析失败不影响其余文件，退出码为 1。
+     */
     public static void main(String[] args) {
         if (args.length == 0) {
-            System.out.println("Usage: MetaDataReader <file_path>");
-            System.out.println("Supported formats: .apk, .apks, .xapk, .apkm");
+            printUsage();
+            System.exit(1);
             return;
         }
-        String filePath = args[0];
-        try {
-            ApkMetaInfo info = readMetaInfo(filePath);
-            System.out.println(info);
-        } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
-            e.printStackTrace();
+
+        boolean jsonMode = false;
+        List<String> files = new ArrayList<>();
+        for (String arg : args) {
+            if ("--json".equals(arg)) jsonMode = true;
+            else files.add(arg);
         }
+
+        if (files.isEmpty()) {
+            printUsage();
+            System.exit(1);
+            return;
+        }
+
+        boolean batch    = files.size() > 1;
+        boolean hasError = false;
+
+        if (jsonMode && batch) System.out.println("[");
+
+        for (int i = 0; i < files.size(); i++) {
+            String  filePath = files.get(i);
+            boolean last     = (i == files.size() - 1);
+            try {
+                ApkMetaInfo info = readMetaInfo(filePath);
+                if (jsonMode) {
+                    String json = info.toJson(filePath);
+                    if (batch) json = indentJson(json, "  ");
+                    System.out.print(json);
+                    if (batch && !last) System.out.print(",");
+                    System.out.println();
+                } else {
+                    if (batch) System.out.println("=== " + filePath + " ===");
+                    System.out.println(info);
+                    if (batch && !last) System.out.println();
+                }
+            } catch (IllegalArgumentException e) {
+                // 输入校验失败（路径为空、文件不存在等），直接展示原始消息
+                hasError = true;
+                System.err.println("[" + filePath + "] " + e.getMessage());
+                if (jsonMode) {
+                    printJsonError(filePath, e.getMessage(), batch, last);
+                }
+            } catch (Exception e) {
+                // 解析过程异常，附加 "parse failed" 前缀以便区分
+                hasError = true;
+                String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                System.err.println("[" + filePath + "] parse failed: " + msg);
+                if (jsonMode) {
+                    printJsonError(filePath, "parse failed: " + msg, batch, last);
+                }
+            }
+        }
+
+        if (jsonMode && batch) System.out.println("]");
+        if (hasError) System.exit(1);
+    }
+
+    private static void printUsage() {
+        System.err.println("Usage: ApksMetaDataReader [--json] <file> [file ...]");
+        System.err.println("  --json    JSON 格式输出（默认：文本格式）");
+        System.err.println("Supported: .apk  .apks  .xapk  .apkm");
+    }
+
+    private static void printJsonError(String filePath, String msg, boolean batch, boolean last) {
+        String json = ApkMetaInfo.errorJson(filePath, msg);
+        if (batch) json = indentJson(json, "  ");
+        System.out.print(json);
+        if (batch && !last) System.out.print(",");
+        System.out.println();
+    }
+
+    /** 在每行开头添加 prefix，用于将 JSON 对象嵌入数组时正确缩进。 */
+    private static String indentJson(String s, String prefix) {
+        StringBuilder sb = new StringBuilder(prefix);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            sb.append(c);
+            if (c == '\n' && i + 1 < s.length()) sb.append(prefix);
+        }
+        return sb.toString();
     }
 }

@@ -1,7 +1,9 @@
 package com.wanyor.android.app;
 
+import java.util.AbstractMap;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Android 资源表（resources.arsc）解析器。
@@ -56,22 +58,22 @@ public class ResourceTableParser {
     // -------------------------------------------------------------------------
     // 惰性字符串池字段：parseStringPool 只存偏移，getFromPool 按需解码并缓存
     // -------------------------------------------------------------------------
-    private byte[]   poolData;        // 指向整个 arsc 字节数组
-    private int      poolStrDataStart;// 字符串数据区起始（绝对偏移）
+    private byte[]   poolData;
+    private int      poolStrDataStart;
     private boolean  poolIsUtf8;
-    private int[]    poolOffsets;     // 每条字符串相对 poolStrDataStart 的偏移
-    private String[] poolCache;       // 已解码缓存；null 表示尚未解码
+    private int[]    poolOffsets;
+    private String[] poolCache;
     private int      poolCount;
 
-    /** 解析结果：资源 ID → 字符串值。 */
-    private Map<Integer, String> resourceMap;
+    /** 解析结果：惰性资源映射，TYPE_STRING 条目首次 get() 时才解码。 */
+    private LazyResourceMap resourceMap;
 
     /**
-     * 解析 resources.arsc 字节，返回资源 ID → 字符串的映射。
-     * 字符串池采用惰性解码：仅在 put/get 实际访问时才解码对应字符串。
+     * 解析 resources.arsc 字节，返回资源 ID → 字符串的惰性映射。
+     * TYPE_STRING 条目在首次 get() 时才解码，大幅减少大型 APK 的字符串解码量。
      */
     public Map<Integer, String> parse(byte[] data) {
-        resourceMap = new HashMap<>();
+        resourceMap = new LazyResourceMap();
         if (data == null || data.length < 12) return resourceMap;
 
         int offset = 0;
@@ -208,7 +210,6 @@ public class ResourceTableParser {
      * FLAG_SPARSE 格式：偏移数组为 uint32[sparseCount]，每项打包了索引和偏移：
      *   entryIdx = packed & 0xFFFF
      *   offset   = ((packed >> 16) & 0xFFFF) * 4
-     * sparseCount 即 entryCount，只存储非空条目。
      */
     private void parseSparse(byte[] data, int packageId, int typeId, int sparseCount,
                              int offsetsStart, int entriesDataStart, boolean isDefault) {
@@ -227,16 +228,13 @@ public class ResourceTableParser {
     // -------------------------------------------------------------------------
 
     /**
-     * 读取单个条目并将其字符串值存入 resourceMap。
+     * 读取单个条目并将值存入 resourceMap。
      *
-     * 两种格式：
-     *   紧凑格式（ENTRY_FLAG_COMPACT）：8 字节，dataType 编码在 entryFlags 高字节。
-     *   标准格式：ResTable_entry（entrySize 字节）+ Res_value（8 字节）。
-     *
-     * 优先存储默认配置的值；非默认配置对已有记录直接跳过（避免解码多语言重复条目）。
+     * TYPE_STRING 条目只存池索引（惰性），其余类型（REFERENCE、INT_DEC）立即解码（成本极低）。
+     * 优先存储默认配置的值；非默认配置对已有记录直接跳过。
      */
     private void putEntry(byte[] data, int entryPos, int resourceId, boolean isDefault) {
-        // 非默认配置且该 ID 已有记录：直接跳过，无需解码字符串
+        // 非默认配置且该 ID 已有记录：直接跳过，无需解码
         if (!isDefault && resourceMap.containsKey(resourceId)) return;
 
         if (entryPos + 4 > data.length) return;
@@ -246,46 +244,39 @@ public class ResourceTableParser {
 
         if ((entryFlags & ENTRY_FLAG_COMPLEX) != 0) return; // 复合条目（map/bag），不含简单值
 
-        String value;
+        int dataType, valData;
         if ((entryFlags & ENTRY_FLAG_COMPACT) != 0) {
             // 紧凑格式：无独立 Res_value 结构，dataType 在 flags 高字节
             if (entryPos + 8 > data.length) return;
-            int dataType = (entryFlags >> 8) & 0xFF;
-            int valData  = FileUtils.readInt(data, entryPos + 4);
-            value = resolveValue(dataType, valData);
+            dataType = (entryFlags >> 8) & 0xFF;
+            valData  = FileUtils.readInt(data, entryPos + 4);
         } else {
             // 标准格式：Res_value 紧跟 ResTable_entry 之后
             // Res_value 布局：size(2) res0(1) dataType(1) data(4)
             if (entryPos + entrySize + 8 > data.length) return;
-            int valBase  = entryPos + entrySize;
-            int dataType = data[valBase + 3] & 0xFF;
-            int valData  = FileUtils.readInt(data, valBase + 4);
-            value = resolveValue(dataType, valData);
+            int valBase = entryPos + entrySize;
+            dataType = data[valBase + 3] & 0xFF;
+            valData  = FileUtils.readInt(data, valBase + 4);
         }
 
-        if (value == null) return;
-        // 默认配置优先；非默认配置只填空缺
-        if (isDefault || !resourceMap.containsKey(resourceId)) {
-            resourceMap.put(resourceId, value);
+        if (dataType == TYPE_STRING) {
+            // 惰性路径：仅记录池索引，首次 get() 时才解码字符串
+            resourceMap.putPending(resourceId, valData, isDefault);
+        } else {
+            String value = resolveNonStringValue(dataType, valData);
+            if (value != null) resourceMap.putDirect(resourceId, value, isDefault);
         }
     }
 
     /**
-     * 根据数据类型将值转换为字符串。
-     * 只处理字符串、整数、引用三种类型；其他类型返回 null（不放入 resourceMap）。
+     * 解析非字符串类型（REFERENCE、INT_DEC）的立即值。
+     * TYPE_STRING 由 LazyResourceMap 惰性处理，不在此方法中出现。
      */
-    private String resolveValue(int dataType, int valData) {
+    private String resolveNonStringValue(int dataType, int valData) {
         switch (dataType) {
-            case TYPE_STRING:
-                // 值为全局字符串池的索引，惰性解码
-                return getFromPool(valData);
-            case TYPE_INT_DEC:
-                return String.valueOf(valData);
-            case TYPE_REFERENCE:
-                // 保留引用格式，由调用方（ApkParser.resolveValue）继续跳转
-                return "@0x" + Integer.toHexString(valData);
-            default:
-                return null;
+            case TYPE_INT_DEC:   return String.valueOf(valData);
+            case TYPE_REFERENCE: return "@0x" + Integer.toHexString(valData);
+            default:             return null;
         }
     }
 
@@ -404,5 +395,83 @@ public class ResourceTableParser {
         String s = poolIsUtf8 ? readUtf8String(poolData, strOff) : readUtf16String(poolData, strOff);
         poolCache[index] = (s != null) ? s : "";
         return poolCache[index];
+    }
+
+    // -------------------------------------------------------------------------
+    // 惰性资源映射
+    //
+    // TYPE_STRING 条目在 putEntry 时只记录池索引（pending），
+    // 首次 get() 时才解码并缓存到 resolved，跳过所有未查询的字符串。
+    // REFERENCE / INT_DEC 类型解码成本极低，仍立即存入 resolved。
+    // -------------------------------------------------------------------------
+
+    private class LazyResourceMap extends AbstractMap<Integer, String> {
+
+        /** 已解码的条目（REFERENCE/INT_DEC 立即写入，STRING 首次查询后移入）。 */
+        private final HashMap<Integer, String>  resolved = new HashMap<>();
+        /** 待解码的 TYPE_STRING 条目：resourceId → 全局字符串池索引。 */
+        private final HashMap<Integer, Integer> pending  = new HashMap<>();
+
+        /**
+         * 存储非字符串类型的已解码值，遵循默认配置优先语义：
+         * isDefault=true 时直接覆盖（含清除同 ID 的 pending）；
+         * isDefault=false 时仅在该 ID 完全不存在时才写入。
+         */
+        void putDirect(int id, String value, boolean isDefault) {
+            if (isDefault) {
+                resolved.put(id, value);
+                pending.remove(id);
+            } else if (!resolved.containsKey(id) && !pending.containsKey(id)) {
+                resolved.put(id, value);
+            }
+        }
+
+        /**
+         * 存储 TYPE_STRING 条目的池索引，延迟解码。
+         * isDefault=true 时覆盖同 ID 的已有 pending 和 resolved（默认配置优先）；
+         * isDefault=false 时仅在该 ID 完全不存在时才写入。
+         */
+        void putPending(int id, int poolIdx, boolean isDefault) {
+            if (isDefault) {
+                pending.put(id, poolIdx);
+                resolved.remove(id);
+            } else if (!resolved.containsKey(id) && !pending.containsKey(id)) {
+                pending.put(id, poolIdx);
+            }
+        }
+
+        @Override
+        public boolean containsKey(Object key) {
+            return resolved.containsKey(key) || pending.containsKey(key);
+        }
+
+        /** 按需解码：命中 pending 时解码并移入 resolved，后续查询直接走 resolved。 */
+        @Override
+        public String get(Object key) {
+            String v = resolved.get(key);
+            if (v != null) return v;
+            Integer poolIdx = pending.remove(key);
+            if (poolIdx == null) return null;
+            String s = getFromPool(poolIdx);
+            if (s == null) s = "";
+            resolved.put((Integer) key, s);
+            return s;
+        }
+
+        @Override
+        public int size() {
+            return resolved.size() + pending.size();
+        }
+
+        /** 强制解码全部 pending 条目后返回完整 entrySet（仅在遍历时触发）。 */
+        @Override
+        public Set<Map.Entry<Integer, String>> entrySet() {
+            for (Integer id : pending.keySet()) {
+                String s = getFromPool(pending.get(id));
+                resolved.put(id, s != null ? s : "");
+            }
+            pending.clear();
+            return resolved.entrySet();
+        }
     }
 }

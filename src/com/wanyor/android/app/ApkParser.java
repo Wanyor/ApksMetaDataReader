@@ -1,11 +1,11 @@
 package com.wanyor.android.app;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.util.Enumeration;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
@@ -16,8 +16,16 @@ import java.util.zip.ZipInputStream;
  */
 public class ApkParser {
 
-    // Res_value dataType: 资源引用，值为另一个资源 ID
     private static final int TYPE_REFERENCE = 0x01;
+
+    private static final Set<String> MANIFEST_TARGETS;
+    static {
+        Set<String> s = new HashSet<>();
+        s.add("manifest");
+        s.add("uses-sdk");
+        s.add("application");
+        MANIFEST_TARGETS = Collections.unmodifiableSet(s);
+    }
 
     /**
      * 解析 APK 文件路径。
@@ -41,7 +49,7 @@ public class ApkParser {
             }
 
             BinaryXmlParser xmlParser = new BinaryXmlParser();
-            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, resourceMap);
+            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, resourceMap, MANIFEST_TARGETS);
             extractMetadata(elements, resourceMap, info);
         } catch (Exception e) {
             e.printStackTrace();
@@ -79,7 +87,7 @@ public class ApkParser {
                 resourceMap = arscParser.parse(arscData);
             }
             BinaryXmlParser xmlParser = new BinaryXmlParser();
-            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, resourceMap);
+            Map<String, List<BinaryXmlParser.XmlAttribute>> elements = xmlParser.parse(manifestData, resourceMap, MANIFEST_TARGETS);
             ApkMetaInfo info = new ApkMetaInfo();
             extractMetadata(elements, resourceMap, info);
             return info;
@@ -249,28 +257,4 @@ public class ApkParser {
         return FileUtils.readZipEntry(zipFile, entryName);
     }
 
-    /** 在 ZIP 中查找名称包含 namePattern 且以 .apk 结尾的第一个条目并返回其字节。 */
-    static byte[] readFirstMatchingEntry(ZipFile zipFile, String namePattern) {
-        try {
-            Enumeration<? extends ZipEntry> entries = zipFile.entries();
-            while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (name.contains(namePattern) && name.endsWith(".apk")) {
-                    InputStream is = zipFile.getInputStream(entry);
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    byte[] buffer = new byte[8192];
-                    int read;
-                    while ((read = is.read(buffer)) != -1) {
-                        bos.write(buffer, 0, read);
-                    }
-                    is.close();
-                    return bos.toByteArray();
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
 }
